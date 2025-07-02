@@ -1,2 +1,291 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+<?php
+// index.php - ระบบจัดการประตูอัตโนมัติ พร้อมสรุปผลจาก Google Sheets CSV และแท็บสมาชิกแบบแก้ไขได้
+
+// Access Log CSV URL
+$log_url = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQPtguu1dKg9kSTaT9ybpnkIxflKDcrfqqDZUOg5O2_Cioup13L4UVfWAtEPMbD_oPvLDRzsjNUkCnu/pub?gid=1662034824&single=true&output=csv';
+$log_handle = fopen($log_url, 'r');
+$log_data = [];
+$log_headers = fgetcsv($log_handle);
+while (($row = fgetcsv($log_handle)) !== false) {
+    $log_data[] = array_combine($log_headers, $row);
+}
+fclose($log_handle);
+
+$range = isset($_GET['range']) ? intval($_GET['range']) : 7;
+$now = new DateTime();
+$filtered_data = [];
+foreach ($log_data as $entry) {
+    $ts = DateTime::createFromFormat('Y-m-d H:i:s', $entry['Timestamp']);
+    if (!$ts) continue;
+    $interval = $now->diff($ts);
+    if ($interval->days <= $range) {
+        $filtered_data[] = $entry;
+    }
+}
+
+$total_access = count($filtered_data);
+$daily_avg = $range > 0 ? round($total_access / $range, 2) : $total_access;
+$door_usage = [];
+$hourly_usage = [];
+foreach ($filtered_data as $entry) {
+    $door = $entry['Door_ID'];
+    $hour = DateTime::createFromFormat('Y-m-d H:i:s', $entry['Timestamp'])->format('H');
+    $door_usage[$door] = ($door_usage[$door] ?? 0) + 1;
+    $hourly_usage[$hour] = ($hourly_usage[$hour] ?? 0) + 1;
+}
+arsort($door_usage);
+arsort($hourly_usage);
+$most_used_door = array_key_first($door_usage);
+$peak_hour = array_key_first($hourly_usage);
+$last_entries = array_slice(array_reverse($filtered_data), 0, 10);
+function percent($val, $total) {
+    return $total > 0 ? round(($val / $total) * 100, 1) : 0;
+}
+
+// ดึงข้อมูลสมาชิก
+$member_url = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQPtguu1dKg9kSTaT9ybpnkIxflKDcrfqqDZUOg5O2_Cioup13L4UVfWAtEPMbD_oPvLDRzsjNUkCnu/pub?gid=1215986464&single=true&output=csv';
+$member_data = [];
+$member_handle = @fopen($member_url, 'r');
+if ($member_handle !== false) {
+  $member_headers = fgetcsv($member_handle);
+  while (($row = fgetcsv($member_handle)) !== false) {
+    $member_data[] = array_combine($member_headers, $row);
+  }
+  fclose($member_handle);
+}
+?>
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <title>ระบบจัดการประตูอัตโนมัติ</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/feather-icons"></script>
+  <style>
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .inline-input { border: 1px solid #ccc; padding: 4px; border-radius: 4px; width: 100%; }
+  </style>
+</head>
+<body class="bg-gray-50 font-sans">
+<header class="bg-blue-600 text-white shadow-md">
+  <div class="container mx-auto px-4 py-4 flex justify-between items-center">
+    <h1 class="text-2xl font-bold flex items-center gap-2">
+      <i data-feather="lock"></i> ระบบจัดการประตู
+    </h1>
+    <div class="flex items-center gap-4">
+      <span class="text-sm">ผู้ดูแลระบบ</span>
+      <a href="#" class="bg-blue-800 px-4 py-1 rounded-md text-sm">ออกจากระบบ</a>
+    </div>
+  </div>
+</header>
+<nav class="bg-white shadow-sm border-b border-gray-200">
+  <div class="container mx-auto px-4 py-2 flex overflow-x-auto">
+    <button class="tab-btn px-4 py-2 font-semibold border-b-2 border-blue-600 text-blue-600" data-tab="summary">สรุปผล</button>
+    <button class="tab-btn px-4 py-2 font-semibold text-gray-600 hover:text-blue-600" data-tab="members">สมาชิก</button>
+    <button class="tab-btn px-4 py-2 font-semibold text-gray-600 hover:text-blue-600" data-tab="doors">ประตู</button>
+    <button class="tab-btn px-4 py-2 font-semibold text-gray-600 hover:text-blue-600" data-tab="access">สิทธิ์เข้า</button>
+  </div>
+</nav>
+<main class="container mx-auto px-4 py-6">
+  <div id="summary" class="tab-content active">
+    <div class="bg-white rounded-xl shadow p-6 space-y-6">
+      <h2 class="text-xl font-bold text-gray-800">สรุปผลการเข้าใช้งาน</h2>
+      <form method="get" class="mb-4">
+        <label class="text-sm">เลือกช่วงเวลา:
+          <select name="range" onchange="this.form.submit()" class="px-3 py-2 border rounded-md">
+            <option value="1" <?= $range == 1 ? 'selected' : '' ?>>ย้อนหลัง 1 วัน</option>
+            <option value="7" <?= $range == 7 ? 'selected' : '' ?>>ย้อนหลัง 7 วัน</option>
+            <option value="10" <?= $range == 10 ? 'selected' : '' ?>>ย้อนหลัง 10 วัน</option>
+            <option value="365" <?= $range == 365 ? 'selected' : '' ?>>ย้อนหลัง 365 วัน</option>
+          </select>
+        </label>
+      </form>
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
+        <div class="bg-gray-100 p-4 rounded-lg">
+          <h3 class="text-gray-600">จำนวนการเข้าถึงทั้งหมด</h3>
+          <p class="text-2xl font-bold text-blue-600"><?= $total_access ?></p>
+        </div>
+        <div class="bg-gray-100 p-4 rounded-lg">
+          <h3 class="text-gray-600">การเข้าใช้งานเฉลี่ยต่อวัน</h3>
+          <p class="text-2xl font-bold text-green-600"><?= $daily_avg ?></p>
+        </div>
+        <div class="bg-gray-100 p-4 rounded-lg">
+          <h3 class="text-gray-600">ประตูที่ใช้งานมากที่สุด</h3>
+          <p class="text-2xl font-bold text-purple-600"><?= $most_used_door ?></p>
+        </div>
+        <div class="bg-gray-100 p-4 rounded-lg">
+          <h3 class="text-gray-600">ช่วงเวลาที่ใช้งานมากที่สุด</h3>
+          <p class="text-2xl font-bold text-yellow-600"><?= $peak_hour ?>:00 น.</p>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div class="bg-white p-4 rounded-lg shadow-sm">
+          <h4 class="text-lg font-semibold text-gray-700 mb-2">เปอร์เซ็นต์การใช้งานประตู</h4>
+          <?php foreach ($door_usage as $door => $count): ?>
+            <div class="mb-2">
+              <div class="flex justify-between">
+                <span><?= $door ?></span>
+                <span><?= percent($count, $total_access) ?>%</span>
+              </div>
+              <div class="w-full bg-gray-200 rounded-full h-2">
+                <div class="bg-blue-600 h-2 rounded-full" style="width: <?= percent($count, $total_access) ?>%"></div>
+              </div>
+            </div>
+          <?php endforeach; ?>
+        </div>
+        <div class="bg-white p-4 rounded-lg shadow-sm">
+          <h4 class="text-lg font-semibold text-gray-700 mb-2">การใช้งานล่าสุด</h4>
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-left">
+                <th>วันที่</th>
+                <th>เวลา</th>
+                <th>รหัส</th>
+                <th>ชื่อ</th>
+                <th>ประตู</th>
+                <th>สถานะ</th>
+              </tr>
+            </thead>
+            <tbody>
+              <?php foreach ($last_entries as $e): $dt = explode(' ', $e['Timestamp']); ?>
+              <tr class="border-t">
+                <td><?= $dt[0] ?></td>
+                <td><?= $dt[1] ?? '' ?></td>
+                <td><?= $e['Member_ID'] ?></td>
+                <td><?= $e['Member_Name'] ?></td>
+                <td><?= $e['Door_ID'] ?></td>
+                <td><?= $e['Status'] ?></td>
+              </tr>
+              <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="members" class="tab-content">
+    <div class="bg-white rounded-xl shadow p-6 mb-6">
+      <div class="flex justify-between items-center mb-4">
+        <h2 class="text-xl font-bold text-gray-800">รายชื่อสมาชิก</h2>
+        <button onclick="addMemberRow()" class="bg-green-600 text-white px-4 py-2 rounded">+ เพิ่มสมาชิก</button>
+      </div>
+      <form method="post" action="member_update.php">
+        <table class="min-w-full text-sm text-gray-700">
+          <thead class="bg-gray-100 text-gray-600">
+            <tr>
+              <th class="px-4 py-2">รหัสสมาชิก</th>
+              <th class="px-4 py-2">ชื่อ</th>
+              <th class="px-4 py-2">Card ID</th>
+              <th class="px-4 py-2">การจัดการ</th>
+            </tr>
+          </thead>
+          <tbody id="memberTable">
+            <?php foreach ($member_data as $member): ?>
+              <tr>
+                <td><input name="member_id[]" value="<?= $member['Member_ID'] ?>" class="inline-input" readonly></td>
+                <td><input name="name[]" value="<?= $member['Name'] ?>" class="inline-input"></td>
+                <td><input name="card_id[]" value="<?= $member['Card_ID'] ?>" class="inline-input"></td>
+                <td>
+                  <button type="submit" name="action" value="edit:<?= $member['Member_ID'] ?>" class="text-blue-600">บันทึก</button>
+                  <button type="submit" name="action" value="delete:<?= $member['Member_ID'] ?>" class="text-red-600">ลบ</button>
+                </td>
+              </tr>
+            <?php endforeach; ?>
+          </tbody>
+        </table>
+      </form>
+    </div>
+  </div>
+  <div id="doors" class="tab-content"><div class="bg-white rounded-xl shadow p-6 mb-6 text-gray-500 text-center">
+     <form method="post" action="member_update.php">
+        <table class="min-w-full text-sm text-gray-700">
+            <div class="flex justify-between items-center mb-4">
+        <h2 class="text-xl font-bold text-gray-800">รายชื่อประตู</h2>
+        <button onclick="addMemberRow()" class="bg-green-600 text-white px-4 py-2 rounded">+ เพิ่มประตู</button>
+      </div>
+          <thead class="bg-gray-100 text-gray-600">
+            <tr>
+              <th class="px-4 py-2">รหัสประตู</th>
+              <th class="px-4 py-2">ชื่อ</th>
+              <th class="px-4 py-2">Door ID</th>
+              <th class="px-4 py-2">การจัดการ</th>
+            </tr>
+          </thead>
+          <tbody id="memberTable">
+            <?php foreach ($member_data as $member): ?>
+              <tr>
+                <td><input name="member_id[]" value="<?= $member['Member_ID'] ?>" class="inline-input" readonly></td>
+                <td><input name="name[]" value="<?= $member['Name'] ?>" class="inline-input"></td>
+                <td><input name="card_id[]" value="<?= $member['Card_ID'] ?>" class="inline-input"></td>
+                <td>
+                  <button type="submit" name="action" value="edit:<?= $member['Member_ID'] ?>" class="text-blue-600">บันทึก</button>
+                  <button type="submit" name="action" value="delete:<?= $member['Member_ID'] ?>" class="text-red-600">ลบ</button>
+                </td>
+              </tr>
+            <?php endforeach; ?>
+          </tbody>
+        </table>
+      </form>
+  </div></div>
+  <div id="access" class="tab-content"><div class="bg-white rounded-xl shadow p-6 mb-6 text-gray-500 text-center"><form method="post" action="member_update.php">
+        <table class="min-w-full text-sm text-gray-700">
+            <div class="flex justify-between items-center mb-4">
+        <h2 class="text-xl font-bold text-gray-800">รายชื่อประตู</h2>
+        <button onclick="addMemberRow()" class="bg-green-600 text-white px-4 py-2 rounded">+ สิทธิ์การเข้า</button>
+      </div>
+          <thead class="bg-gray-100 text-gray-600">
+            <tr>
+              <th class="px-4 py-2">รหัสสิทธิ์</th>
+              <th class="px-4 py-2">รหัสสมาชิก</th>
+              <th class="px-4 py-2">Door ID</th>
+              <th class="px-4 py-2">ชื่อประตู</th>
+              <th class="px-4 py-2">การจัดการ</th>
+            </tr>
+          </thead>
+          <tbody id="memberTable">
+            <?php foreach ($member_data as $member): ?>
+              <tr>
+                <td><input name="member_id[]" value="<?= $member['Member_ID'] ?>" class="inline-input" readonly></td>
+                <td><input name="name[]" value="<?= $member['Name'] ?>" class="inline-input"></td>
+                <td><input name="card_id[]" value="<?= $member['Card_ID'] ?>" class="inline-input"></td>
+                <td>
+                  <button type="submit" name="action" value="edit:<?= $member['Member_ID'] ?>" class="text-blue-600">บันทึก</button>
+                  <button type="submit" name="action" value="delete:<?= $member['Member_ID'] ?>" class="text-red-600">ลบ</button>
+                </td>
+              </tr>
+            <?php endforeach; ?>
+          </tbody>
+        </table>
+      </form></div></div>
+</main>
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    feather.replace();
+    const tabs = document.querySelectorAll(".tab-btn");
+    const contents = document.querySelectorAll(".tab-content");
+    tabs.forEach(btn => btn.addEventListener("click", () => {
+      tabs.forEach(b => b.classList.remove("border-blue-600", "text-blue-600"));
+      btn.classList.add("border-blue-600", "text-blue-600");
+      contents.forEach(c => c.classList.remove("active"));
+      document.getElementById(btn.dataset.tab).classList.add("active");
+    }));
+  });
+  function addMemberRow() {
+    const row = `<tr>
+      <td><input name="member_id[]" class="inline-input"></td>
+      <td><input name="name[]" class="inline-input"></td>
+      <td><input name="card_id[]" class="inline-input"></td>
+      <td>
+        <button type="submit" name="action" value="add" class="text-green-600">เพิ่ม</button>
+      </td>
+    </tr>`;
+    document.getElementById("memberTable").insertAdjacentHTML('beforeend', row);
+
+
+    
+  }
+</script>
+</body>
+</html>
